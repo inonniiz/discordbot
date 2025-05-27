@@ -1,9 +1,9 @@
 name: Run Polling Script Every Minute
 
-#on:
-#  schedule:
-#    - cron: '* * * * *'
-#  workflow_dispatch:
+on:
+  schedule:
+    - cron: '* * * * *9999999'
+  workflow_dispatch:
 
 jobs:
   poll:
