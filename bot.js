@@ -2,6 +2,7 @@ require('dotenv').config();
 const { Client, GatewayIntentBits } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
 const { v4: uuidv4 } = require('uuid');
+const axios = require('axios');
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
@@ -9,12 +10,15 @@ const client = new Client({
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
+// ===== Duration Parser =====
 function parseDuration(durationStr) {
   const regex = /(\d+)(d|h|m)/g;
   let match;
   let totalMs = 0;
+  let matched = false;
 
   while ((match = regex.exec(durationStr)) !== null) {
+    matched = true;
     const [_, num, unit] = match;
     const n = parseInt(num);
     if (unit === 'd') totalMs += n * 24 * 60 * 60 * 1000;
@@ -22,9 +26,10 @@ function parseDuration(durationStr) {
     if (unit === 'm') totalMs += n * 60 * 1000;
   }
 
-  return new Date(Date.now() + totalMs);
+  return matched ? new Date(Date.now() + totalMs) : null;
 }
 
+// ===== Discord Bot Commands =====
 client.on('messageCreate', async message => {
   if (!message.content.startsWith('!')) return;
 
@@ -32,12 +37,21 @@ client.on('messageCreate', async message => {
   const command = args.shift().toLowerCase();
 
   if (command === 'remindme') {
-    const [stock, ...durationParts] = args;
-    const durationStr = durationParts.join('');
-    const remindAt = parseDuration(durationStr);
+    const [stock, duration, ...noteParts] = args;
+    const note = noteParts.join(' ').replace(/^"|"$/g, ''); // Strip outer quotes
+    const remindAt = parseDuration(duration);
 
-    if (!stock || !remindAt) {
-      return message.reply('❗ รูปแบบคำสั่ง: `!remindme <stock> <duration>` เช่น `!remindme ccsi 1d3h`');
+    if (!stock || !remindAt || remindAt <= new Date()) {
+      return message.reply('❗ ใช้รูปแบบ `!remindme <stock> <duration> "<note>"` เช่น `!remindme tsla 1d2h "จับตาข่าวทรัมป์"` โดยเวลาต้องเป็นอนาคต');
+    }
+
+    let price = null;
+    try {
+      const res = await axios.get(`https://query1.finance.yahoo.com/v7/finance/quote?symbols=${stock}`);
+      price = res.data.quoteResponse.result[0]?.regularMarketPrice;
+      if (!price) throw new Error('Invalid stock');
+    } catch (e) {
+      return message.reply('⚠️ ไม่สามารถดึงราคาหุ้นได้ กรุณาตรวจสอบชื่อหุ้น');
     }
 
     const id = uuidv4();
@@ -50,6 +64,8 @@ client.on('messageCreate', async message => {
       channel_id: message.channel.id,
       stock: stock.toUpperCase(),
       remind_at: remindAt.toISOString(),
+      note,
+      price_at_creation: price,
     });
 
     if (error) {
@@ -57,7 +73,7 @@ client.on('messageCreate', async message => {
       return message.reply('เกิดข้อผิดพลาดในการบันทึกข้อมูล');
     }
 
-    return message.reply(`🕒 ตั้งเตือนสำหรับ ${stock.toUpperCase()} ใน ${durationStr} แล้ว (ID: \`${short_id}\`)`);
+    return message.reply(`🕒 ตั้งเตือนสำหรับ **${stock.toUpperCase()}** ใน ${duration} (ID: \`${short_id}\`)\n💰 ราคาปัจจุบัน: **$${price}**\n📝 ข้อความ: _${note || 'ไม่มี'}_`);
   }
 
   if (command === 'reminders') {
@@ -72,11 +88,10 @@ client.on('messageCreate', async message => {
 
     const lines = data.map(rem => {
       const date = new Date(rem.remind_at).toLocaleString();
-      return `🆔 \`${rem.short_id}\` | ${rem.stock.toUpperCase()} → ${date}`;
+      return `🆔 \`${rem.short_id}\` | ${rem.stock.toUpperCase()} → ${date} | 📝 ${rem.note || 'ไม่มี'}`;
     });
 
-    return message.reply(`📋 Reminder ของคุณ:
-${lines.join('\n')}`);
+    return message.reply(`📋 Reminder ของคุณ:\n${lines.join('\n')}`);
   }
 
   if (command === 'cancel') {
